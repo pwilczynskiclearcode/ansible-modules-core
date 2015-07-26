@@ -51,9 +51,15 @@ options:
         version_added: "1.6"
     update_cache:
         description:
-            - Run the equivalent of C(apt-get update) when a change occurs.  Cache updates are run after making changes.
+            - Run the equivalent of C(apt-get update) when a change occurs. Cache updates are run after making changes.
         required: false
         default: "yes"
+        choices: [ "yes", "no" ]
+    update_only_added:
+        description:
+            - It limits update_cache (C(apt-get update)) scope to update only the repository added by apt_repository.
+        required: false
+        default: "no"
         choices: [ "yes", "no" ]
     validate_certs:
         version_added: '1.8'
@@ -81,6 +87,12 @@ apt_repository: repo='deb http://archive.canonical.com/ubuntu hardy partner' sta
 # On Ubuntu target: add nginx stable repository from PPA and install its signing key.
 # On Debian target: adding PPA is not available, so it will fail immediately.
 apt_repository: repo='ppa:nginx/stable'
+
+# Call the apt-get update to get all recent package lists with their dependencies.
+apt_repository: repo='deb http://archive.canonical.com/ubuntu hardy partner' update_cache=yes
+
+# Call the apt-get update to get the recent package lists only for the added repository.
+apt_repository: repo='deb http://archive.canonical.com/ubuntu hardy partner' update_only_added=yes
 '''
 
 import glob
@@ -415,6 +427,7 @@ def main():
             state=dict(choices=['present', 'absent'], default='present'),
             mode=dict(required=False, default=0644),
             update_cache = dict(aliases=['update-cache'], type='bool', default='yes'),
+            update_only_added = dict(type='bool', default='no'),
             # this should not be needed, but exists as a failsafe
             install_python_apt=dict(required=False, default="yes", type='bool'),
             validate_certs = dict(default='yes', type='bool'),
@@ -429,7 +442,11 @@ def main():
     repo = module.params['repo']
     state = module.params['state']
     update_cache = module.params['update_cache']
+    update_only_added = module.params['update_only_added']
+    if update_only_added and not update_cache:
+        module.fail_json(msg='You must set update_cache=yes to use update_only_added option.')
     sourceslist = None
+    repository_added = False
 
     if HAVE_PYTHON_APT:
         if isinstance(distro, aptsources_distro.UbuntuDistribution):
@@ -452,6 +469,7 @@ def main():
     try:
         if state == 'present' and expanded_repo not in sourceslist.repos_urls:
             sourceslist.add_source(repo)
+            repository_added = True
         elif state == 'absent':
             sourceslist.remove_source(repo)
     except InvalidSource, err:
@@ -465,7 +483,12 @@ def main():
             sourceslist.save(module)
             if update_cache:
                 cache = apt.Cache()
-                cache.update()
+                if update_only_added and repository_added:
+                    tmp_sources = tempfile.TemporaryFile()
+                    tmp_sources.write(repo)
+                    cache.update(sources_list=tmp_sources.name)
+                else:
+                    cache.update()
         except OSError, err:
             module.fail_json(msg=unicode(err))
 
